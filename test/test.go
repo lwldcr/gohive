@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"tcliservice"
 	"github.com/lwldcr/gohive"
 	"os"
 )
@@ -11,7 +10,7 @@ func main() {
 	// first build a new transport
 	// of course we can wrap all these routine operations into functions for repeatedly using
 	// replace HIVE_HOST, PORT, HIVE_USER, HIVE_PASSWD with your own configurations
-	t, err := gohive.NewTSaslTransport(HIVE_HOST, PORT, HIVE_USER, HIVE_PASSWD)
+	t, err := gohive.NewTSaslTransport(HIVE_HOST, PORT, HIVE_USER, HIVE_PASSWD, gohive.DefaultOptions)
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
@@ -22,46 +21,27 @@ func main() {
 		fmt.Println(err)
 		os.Exit(1)
 	}
+	defer t.Close()
 
-	// then you get a session, and you can execute query now
-	sessionHandler := t.Session
-	execReq := tcliservice.NewTExecuteStatementReq()
-	execReq.SessionHandle = sessionHandler
-	execReq.Statement = "show databases"
-	execResp, err := t.Client.ExecuteStatement(execReq)
+	rows, err := t.Query("SHOW TABLES")
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
+	defer rows.Close()
 
-	// fetch result after executing
-	operationHandler := execResp.GetOperationHandle()
-	fetchReq := tcliservice.NewTFetchResultsReq()
-	fetchReq.OperationHandle = operationHandler
-	fetchReq.Orientation = tcliservice.TFetchOrientation_FETCH_FIRST
-	fetchReq.MaxRows = 10
-	fetchResp, err := t.Client.FetchResults(fetchReq)
-	if err != nil {
-		fmt.Println(err)
+	status, err := rows.Wait()
+	if !status.IsSuccess() {
+		fmt.Println("unsuccessful query", status)
 		os.Exit(1)
 	}
 
-	// there you get your data
-	data := make([]string, 0)
-	res := fetchResp.GetResults().GetRows()
-	for _,  r := range res {
-		row := r.GetColVals()
-		for _, field := range row {
-			data = append(data, field.GetStringVal().GetValue())
-		}
+	var (
+		tableName string
+	)
+
+	for rows.Next() {
+		rows.Scan(&tableName)
+		fmt.Println("tablename:", tableName)
 	}
-
-
-	fmt.Println("data:", data)
-
-	// do cleaning
-	closeOperationReq := tcliservice.NewTCloseOperationReq()
-	closeOperationReq.OperationHandle = operationHandler
-	t.Client.CloseOperation(closeOperationReq)
-	t.Close()
 }

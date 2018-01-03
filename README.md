@@ -9,8 +9,8 @@ package main
 
 import (
 	"fmt"
-	"tcliservice"
 	"github.com/lwldcr/gohive"
+	"github.com/lwldcr/gohive/tcliservice"
 	"os"
 )
 

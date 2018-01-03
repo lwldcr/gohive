@@ -17,7 +17,7 @@ import (
 	"errors"
 	"encoding/binary"
 	"fmt"
-	"tcliservice"
+	"github.com/lwldcr/gohive/tcliservice"
 	"bytes"
 )
 
@@ -42,10 +42,11 @@ type TSaslClientTransport struct {
 	Passwd string
 	WriteBuffer *bytes.Buffer
 	ReadBuffer *bytes.Buffer
+	options Options
 }
 
 // NewTSaslTransport news a pointer to TSaslClientTransport struct with given configurations
-func NewTSaslTransport(host string, port int, user string, passwd string) (*TSaslClientTransport, error) {
+func NewTSaslTransport(host string, port int, user string, passwd string, options Options) (*TSaslClientTransport, error) {
 	saslClient := sasl.NewPlainClient("", user, passwd)
 	socket, err := thrift.NewTSocket(net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {
@@ -59,6 +60,7 @@ func NewTSaslTransport(host string, port int, user string, passwd string) (*TSas
 		Passwd:passwd,
 		ReadBuffer:new(bytes.Buffer),
 		WriteBuffer:new(bytes.Buffer),
+		options:options,
 	}
 
 	return &trans, nil
@@ -183,7 +185,6 @@ func (t *TSaslClientTransport) Open() error {
 	t.Client = cli
 	t.Session = session.SessionHandle
 	t.opened = true
-	//fmt.Println("session opened")
 	return nil
 }
 
@@ -252,4 +253,28 @@ func (t *TSaslClientTransport) recvMessage() (int, []byte, error) {
 		}
 	}
 	return status, payload, nil
+}
+
+// Issue a query on an open connection, returning a RowSet, which
+// can be later used to query the operation's status.
+func (c *TSaslClientTransport) Query(query string) (RowSet, error) {
+	executeReq := tcliservice.NewTExecuteStatementReq()
+	executeReq.SessionHandle = c.Session
+	executeReq.Statement = query
+
+	resp, err := c.Client.ExecuteStatement(executeReq)
+	if err != nil {
+		return nil, fmt.Errorf("Error in ExecuteStatement: %+v, %v", resp, err)
+	}
+
+	if !isSuccessStatus(*resp.Status) {
+		return nil, fmt.Errorf("Error from server: %s", resp.Status.String())
+	}
+
+	return newRowSet(c.Client, resp.OperationHandle, c.options), nil
+}
+
+func isSuccessStatus(p tcliservice.TStatus) bool {
+	status := p.GetStatusCode()
+	return status == tcliservice.TStatusCode_SUCCESS_STATUS || status == tcliservice.TStatusCode_SUCCESS_WITH_INFO_STATUS
 }
