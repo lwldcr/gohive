@@ -23,6 +23,7 @@ func main() {
 	}
 	defer t.Close()
 
+	// execute query
 	rows, err := t.Query("SHOW TABLES")
 	if err != nil {
 		fmt.Println(err)
@@ -30,6 +31,7 @@ func main() {
 	}
 	defer rows.Close()
 
+	// check status
 	status, err := rows.Wait()
 	if !status.IsSuccess() {
 		fmt.Println("unsuccessful query", status)
@@ -40,6 +42,7 @@ func main() {
 		tableName string
 	)
 
+	// scan results
 	for rows.Next() {
 		rows.Scan(&tableName)
 		fmt.Println("tablename:", tableName)
