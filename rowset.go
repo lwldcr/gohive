@@ -292,19 +292,19 @@ func convertRow(row *tcliservice.TRow, dest []interface{}) error {
 
 func convertColumn(col *tcliservice.TColumnValue) (interface{}, error) {
 	switch {
-	case col.StringVal.IsSetValue():
+	case col.StringVal != nil && col.StringVal.IsSetValue():
 		return col.StringVal.GetValue(), nil
-	case col.BoolVal.IsSetValue():
+	case col.BoolVal != nil && col.BoolVal.IsSetValue():
 		return col.BoolVal.GetValue(), nil
-	case col.ByteVal.IsSetValue():
+	case col.ByteVal != nil && col.ByteVal.IsSetValue():
 		return int64(col.ByteVal.GetValue()), nil
-	case col.I16Val.IsSetValue():
+	case col.I16Val != nil && col.I16Val.IsSetValue():
 		return int32(col.I16Val.GetValue()), nil
-	case col.I32Val.IsSetValue():
+	case col.I32Val != nil && col.I32Val.IsSetValue():
 		return col.I32Val.GetValue(), nil
-	case col.I64Val.IsSetValue():
+	case col.I64Val != nil && col.I64Val.IsSetValue():
 		return col.I64Val.GetValue(), nil
-	case col.DoubleVal.IsSetValue():
+	case col.DoubleVal != nil && col.DoubleVal.IsSetValue():
 		return col.DoubleVal.GetValue(), nil
 	default:
 		return nil, fmt.Errorf("Can't convert column value %v", col)
