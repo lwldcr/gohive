@@ -163,7 +163,6 @@ func (r *rowSet) Next() bool {
 		return false
 	}
 
-	//fmt.Println("RRRR", r.rowSet == nil, r.offset, r.numRows)
 	if r.rowSet == nil || r.offset >= r.numRows {
 		if !r.hasMore {
 			return false
@@ -186,15 +185,10 @@ func (r *rowSet) Next() bool {
 		}
 
 		r.offset = 0
-		//fmt.Println("results;", resp.GetResults(), len(resp.Results.Columns)) //, len(resp.GetResults().GetColumns()[0].StringVal.Values))
 		r.rowSet = resp.Results
 		r.hasMore = *resp.HasMoreRows
 	}
 
-	//fmt.Println("offset of rows:", r.offset)
-	//fmt.Println("length:", len(r.rowSet.Rows))
-	//row := r.rowSet.Rows[r.offset]
-	//column := r.rowSet.Columns[r.offset]
 	r.nextRow = make([]interface{}, len(r.Columns()))
 	if r.columnValues == nil {
 		valueSets, err := processColumnValues(r.rowSet.Columns)

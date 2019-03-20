@@ -156,7 +156,6 @@ func (t *TSaslClientTransport) Open() error {
 
 	req := tcliservice.NewTOpenSessionReq()
 	if t.NeedAuth && t.SaslClientFactory != nil {
-		fmt.Println("doing sasl authentication")
 		t.SaslClient = t.SaslClientFactory
 		mech, ir, err := t.SaslClient.Start()
 		if err != nil {
@@ -194,10 +193,8 @@ func (t *TSaslClientTransport) Open() error {
 
 		req.Username = &t.User
 		req.Password = &t.Passwd
-		fmt.Println("auth done")
 	}
 	req.ClientProtocol = tcliservice.TProtocolVersion_HIVE_CLI_SERVICE_PROTOCOL_V9
-	fmt.Println("opening session with request:", req)
 
 	session, err := cli.OpenSession(context.Background(), req)
 	if err != nil {
@@ -270,7 +267,6 @@ func (t *TSaslClientTransport) recvMessage() (int, []byte, error) {
 		payload = make([]byte, length)
 		_, err := t.TSocket.Read(payload)
 		if err != nil {
-			fmt.Println(err)
 			return -1, nil, err
 		}
 	}
