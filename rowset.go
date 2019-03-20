@@ -2,14 +2,15 @@ package gohive
 
 /*
 rowset.go comes from github.com/derekgr/hivething, tiny changes
- */
+*/
 import (
 	"errors"
 	"fmt"
 	"log"
 	"time"
 
-	"git.apache.org/thrift.git/lib/go/thrift"
+	"context"
+	"github.com/apache/thrift/lib/go/thrift"
 	"github.com/lwldcr/gohive/tcliservice"
 )
 
@@ -23,21 +24,24 @@ var (
 	DefaultOptions = Options{PollIntervalSeconds: 5, BatchSize: 10000}
 )
 
-
 type rowSet struct {
 	thrift    *tcliservice.TCLIServiceClient
 	operation *tcliservice.TOperationHandle
 	options   Options
 
-	columns    []*tcliservice.TColumnDesc
-	columnStrs []string
+	columns      []*tcliservice.TColumnDesc
+	columnStrs   []string
+	columnValues [][]interface{}
 
+	numRows int
 	offset  int
 	rowSet  *tcliservice.TRowSet
 	hasMore bool
 	ready   bool
 
 	nextRow []interface{}
+
+	Ctx context.Context
 }
 
 // A RowSet represents an asyncronous hive operation. You can
@@ -63,7 +67,8 @@ type Status struct {
 }
 
 func newRowSet(thrift *tcliservice.TCLIServiceClient, operation *tcliservice.TOperationHandle, options Options) RowSet {
-	return &rowSet{thrift, operation, options, nil, nil, 0, nil, true, false, nil}
+	return &rowSet{thrift: thrift, operation: operation, options: options, offset: 0, hasMore: true, ready: false,
+		Ctx: context.Background()}
 }
 
 // Construct a RowSet for a previously submitted operation, using the prior operation's Handle()
@@ -82,9 +87,9 @@ func (r *rowSet) Poll() (*Status, error) {
 	req := tcliservice.NewTGetOperationStatusReq()
 	req.OperationHandle = r.operation
 
-	resp, err := r.thrift.GetOperationStatus(req)
+	resp, err := r.thrift.GetOperationStatus(r.Ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("Error getting status: %+v, %v", resp, err)
+		return nil, fmt.Errorf("error getting status: %+v, %v", resp, err)
 	}
 
 	if !isSuccessStatus(*resp.Status) {
@@ -92,7 +97,7 @@ func (r *rowSet) Poll() (*Status, error) {
 	}
 
 	if resp.OperationState == nil {
-		return nil, errors.New("No error from GetStatus, but nil status!")
+		return nil, errors.New("no error from GetStatus, but nil status!")
 	}
 
 	return &Status{resp.OperationState, nil, time.Now()}, nil
@@ -113,7 +118,7 @@ func (r *rowSet) Wait() (*Status, error) {
 				metadataReq := tcliservice.NewTGetResultSetMetadataReq()
 				metadataReq.OperationHandle = r.operation
 
-				metadataResp, err := r.thrift.GetResultSetMetadata(metadataReq)
+				metadataResp, err := r.thrift.GetResultSetMetadata(r.Ctx, metadataReq)
 				if err != nil {
 					return nil, err
 				}
@@ -127,7 +132,7 @@ func (r *rowSet) Wait() (*Status, error) {
 
 				return status, nil
 			}
-			return nil, fmt.Errorf("Query failed execution: %s", status.state.String())
+			return nil, fmt.Errorf("query failed execution: %s", status.state.String())
 		}
 
 		time.Sleep(time.Duration(r.options.PollIntervalSeconds) * time.Second)
@@ -141,7 +146,7 @@ func (r *rowSet) waitForSuccess() error {
 			return err
 		}
 		if !status.IsSuccess() || !r.ready {
-			return fmt.Errorf("Unsuccessful query execution: %+v", status)
+			return fmt.Errorf("unsuccessful query execution: %+v", status)
 		}
 	}
 
@@ -158,7 +163,8 @@ func (r *rowSet) Next() bool {
 		return false
 	}
 
-	if r.rowSet == nil || r.offset >= len(r.rowSet.Rows) {
+	//fmt.Println("RRRR", r.rowSet == nil, r.offset, r.numRows)
+	if r.rowSet == nil || r.offset >= r.numRows {
 		if !r.hasMore {
 			return false
 		}
@@ -168,7 +174,7 @@ func (r *rowSet) Next() bool {
 		fetchReq.Orientation = tcliservice.TFetchOrientation_FETCH_NEXT
 		fetchReq.MaxRows = r.options.BatchSize
 
-		resp, err := r.thrift.FetchResults(fetchReq)
+		resp, err := r.thrift.FetchResults(r.Ctx, fetchReq)
 		if err != nil {
 			log.Printf("FetchResults failed: %v\n", err)
 			return false
@@ -180,17 +186,30 @@ func (r *rowSet) Next() bool {
 		}
 
 		r.offset = 0
+		//fmt.Println("results;", resp.GetResults(), len(resp.Results.Columns)) //, len(resp.GetResults().GetColumns()[0].StringVal.Values))
 		r.rowSet = resp.Results
 		r.hasMore = *resp.HasMoreRows
 	}
 
-	row := r.rowSet.Rows[r.offset]
+	//fmt.Println("offset of rows:", r.offset)
+	//fmt.Println("length:", len(r.rowSet.Rows))
+	//row := r.rowSet.Rows[r.offset]
+	//column := r.rowSet.Columns[r.offset]
 	r.nextRow = make([]interface{}, len(r.Columns()))
-
-	if err := convertRow(row, r.nextRow); err != nil {
-		log.Printf("Error converting row: %v", err)
-		return false
+	if r.columnValues == nil {
+		valueSets, err := processColumnValues(r.rowSet.Columns)
+		if err != nil || len(valueSets) <= 0 {
+			return false
+		}
+		r.columnValues = valueSets
+		r.numRows = len(r.columnValues[0])
 	}
+
+	row := make([]interface{}, 0, len(r.columnValues))
+	for _, col := range r.columnValues {
+		row = append(row, col[r.offset])
+	}
+	r.nextRow = row
 	r.offset++
 
 	return true
@@ -209,11 +228,11 @@ func (r *rowSet) Scan(dest ...interface{}) error {
 	// like passing nil. database/sql's method is very convenient,
 	// for example: http://golang.org/src/pkg/database/sql/convert.go, like 85
 	if r.nextRow == nil {
-		return errors.New("No row to scan! Did you call Next() first?")
+		return errors.New("no row to scan! Did you call Next() first?")
 	}
 
 	if len(dest) != len(r.nextRow) {
-		return fmt.Errorf("Can't scan into %d arguments with input of length %d", len(dest), len(r.nextRow))
+		return fmt.Errorf("can't scan into %d arguments with input of length %d", len(dest), len(r.nextRow))
 	}
 
 	for i, val := range r.nextRow {
@@ -271,44 +290,79 @@ func (r *rowSet) Columns() []string {
 // be used to reattach to a running operation. This identifier and
 // serialized representation should be considered opaque by users.
 func (r *rowSet) Handle() ([]byte, error) {
-	return serializeOp(r.operation)
+	return serializeOp(r.Ctx, r.operation)
 }
 
-func convertRow(row *tcliservice.TRow, dest []interface{}) error {
-	if len(row.ColVals) != len(dest) {
-		return fmt.Errorf("Returned row has %d values, but scan row has %d", len(row.ColVals), len(dest))
-	}
-
-	for i, col := range row.ColVals {
-		val, err := convertColumn(col)
+// processColumnValues processes results columns and converts into slices of values
+func processColumnValues(cols []*tcliservice.TColumn) ([][]interface{}, error) {
+	valueSets := make([][]interface{}, 0, len(cols))
+	for _, col := range cols {
+		values, err := convertColumnValues(col)
 		if err != nil {
-			return fmt.Errorf("Error converting column %d: %v", i, err)
+			return valueSets, err
 		}
-		dest[i] = val
+		if len(values) > 0 {
+			valueSets = append(valueSets, values)
+		}
 	}
-
-	return nil
+	return valueSets, nil
 }
 
-func convertColumn(col *tcliservice.TColumnValue) (interface{}, error) {
+// convertColumnValues converts given column values into interface{} slice
+func convertColumnValues(col *tcliservice.TColumn) ([]interface{}, error) {
+	var size int
+	var dest []interface{}
 	switch {
-	case col.StringVal != nil && col.StringVal.IsSetValue():
-		return col.StringVal.GetValue(), nil
-	case col.BoolVal != nil && col.BoolVal.IsSetValue():
-		return col.BoolVal.GetValue(), nil
-	case col.ByteVal != nil && col.ByteVal.IsSetValue():
-		return int64(col.ByteVal.GetValue()), nil
-	case col.I16Val != nil && col.I16Val.IsSetValue():
-		return int32(col.I16Val.GetValue()), nil
-	case col.I32Val != nil && col.I32Val.IsSetValue():
-		return col.I32Val.GetValue(), nil
-	case col.I64Val != nil && col.I64Val.IsSetValue():
-		return col.I64Val.GetValue(), nil
-	case col.DoubleVal != nil && col.DoubleVal.IsSetValue():
-		return col.DoubleVal.GetValue(), nil
-	default:
-		return nil, fmt.Errorf("Can't convert column value %v", col)
+	case col.StringVal != nil && len(col.StringVal.Values) > 0:
+		size = len(col.StringVal.Values)
+		dest = make([]interface{}, size)
+		for i, v := range col.StringVal.Values {
+			dest[i] = v
+		}
+	case col.BinaryVal != nil && len(col.BinaryVal.Values) > 0:
+		size = len(col.BinaryVal.Values)
+		dest = make([]interface{}, size)
+		for i, v := range col.BinaryVal.Values {
+			dest[i] = v
+		}
+	case col.BoolVal != nil && len(col.BoolVal.Values) > 0:
+		size = len(col.BoolVal.Values)
+		dest = make([]interface{}, size)
+		for i, v := range col.BoolVal.Values {
+			dest[i] = v
+		}
+	case col.ByteVal != nil && len(col.ByteVal.Values) > 0:
+		size = len(col.ByteVal.Values)
+		dest = make([]interface{}, size)
+		for i, v := range col.ByteVal.Values {
+			dest[i] = v
+		}
+	case col.DoubleVal != nil && len(col.DoubleVal.Values) > 0:
+		size = len(col.DoubleVal.Values)
+		dest = make([]interface{}, size)
+		for i, v := range col.DoubleVal.Values {
+			dest[i] = v
+		}
+	case col.I16Val != nil && len(col.I16Val.Values) > 0:
+		size = len(col.I16Val.Values)
+		dest = make([]interface{}, size)
+		for i, v := range col.I16Val.Values {
+			dest[i] = v
+		}
+	case col.I32Val != nil && len(col.I32Val.Values) > 0:
+		size = len(col.I32Val.Values)
+		dest = make([]interface{}, size)
+		for i, v := range col.I32Val.Values {
+			dest[i] = v
+		}
+	case col.I64Val != nil && len(col.I64Val.Values) > 0:
+		size = len(col.I64Val.Values)
+		dest = make([]interface{}, size)
+		for i, v := range col.I64Val.Values {
+			dest[i] = v
+		}
 	}
+	return dest, nil
 }
 
 // Returns a string representation of operation status.
@@ -356,9 +410,9 @@ func deserializeOp(handle []byte) (*tcliservice.TOperationHandle, error) {
 	return &val, nil
 }
 
-func serializeOp(operation *tcliservice.TOperationHandle) ([]byte, error) {
+func serializeOp(ctx context.Context, operation *tcliservice.TOperationHandle) ([]byte, error) {
 	ser := thrift.NewTSerializer()
-	return ser.Write(operation)
+	return ser.Write(ctx, operation)
 }
 
 // Close do close operation
@@ -366,7 +420,7 @@ func (r *rowSet) Close() error {
 	closeOperationReq := tcliservice.NewTCloseOperationReq()
 	closeOperationReq.OperationHandle = r.operation
 
-	_, err := r.thrift.CloseOperation(closeOperationReq)
+	_, err := r.thrift.CloseOperation(r.Ctx, closeOperationReq)
 
 	return err
 }

@@ -10,15 +10,17 @@ It now supports PLAIN mode only, other modes MAY be included in later updates.
 package gohive
 
 import (
-	sasl "github.com/emersion/go-sasl"
-	"git.apache.org/thrift.git/lib/go/thrift"
+	"bytes"
+	"encoding/binary"
+	"errors"
+	"fmt"
 	"net"
 	"strconv"
-	"errors"
-	"encoding/binary"
-	"fmt"
+
+	"context"
+	"github.com/apache/thrift/lib/go/thrift"
+	sasl "github.com/emersion/go-sasl"
 	"github.com/lwldcr/gohive/tcliservice"
-	"bytes"
 )
 
 // SASL status definition
@@ -28,39 +30,56 @@ const (
 	BAD
 	ERROR
 	COMPLETE
+
+	DefaultUser = "_hive"
+	DefaultPass = "_hive"
 )
 
 // TSaslClientTransport struct
 type TSaslClientTransport struct {
 	*thrift.TSocket
 	SaslClientFactory sasl.Client
-	SaslClient sasl.Client
-	Client *tcliservice.TCLIServiceClient
-	Session *tcliservice.TSessionHandle
-	opened bool
-	User string
-	Passwd string
-	WriteBuffer *bytes.Buffer
-	ReadBuffer *bytes.Buffer
-	options Options
+	SaslClient        sasl.Client
+	Client            *tcliservice.TCLIServiceClient
+	Session           *tcliservice.TSessionHandle
+	opened            bool
+	User              string
+	Passwd            string
+	WriteBuffer       *bytes.Buffer
+	ReadBuffer        *bytes.Buffer
+	options           Options
+	Ctx               context.Context
+	NeedAuth          bool
 }
 
 // NewTSaslTransport news a pointer to TSaslClientTransport struct with given configurations
 func NewTSaslTransport(host string, port int, user string, passwd string, options Options) (*TSaslClientTransport, error) {
-	saslClient := sasl.NewPlainClient("", user, passwd)
+	var saslClient sasl.Client
+	var needAuth bool
+	if user == "" && passwd == "" {
+		user = DefaultPass
+		passwd = DefaultPass
+	}
+
+	if user != "" {
+		saslClient = sasl.NewPlainClient("", user, passwd)
+		needAuth = true
+	}
 	socket, err := thrift.NewTSocket(net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {
 		return nil, err
 	}
 
 	trans := TSaslClientTransport{
-		TSocket:socket,
-		SaslClientFactory:saslClient,
-		User:user,
-		Passwd:passwd,
-		ReadBuffer:new(bytes.Buffer),
-		WriteBuffer:new(bytes.Buffer),
-		options:options,
+		TSocket:           socket,
+		SaslClientFactory: saslClient,
+		User:              user,
+		Passwd:            passwd,
+		ReadBuffer:        new(bytes.Buffer),
+		WriteBuffer:       new(bytes.Buffer),
+		options:           options,
+		Ctx:               context.Background(),
+		NeedAuth:          needAuth,
 	}
 
 	return &trans, nil
@@ -74,7 +93,7 @@ func (t *TSaslClientTransport) Write(data []byte) (int, error) {
 // Flush will flush local buffered data into transport, with a leading 4 bytes representing data length
 // This is VERY import for authentication.
 // If we dont send data length, the server doesnot know how long to read.
-func (t *TSaslClientTransport) Flush() error {
+func (t *TSaslClientTransport) Flush(ctx context.Context) error {
 	length := make([]byte, 4)
 	binary.BigEndian.PutUint32(length, uint32(t.WriteBuffer.Len()))
 
@@ -125,59 +144,62 @@ func (t *TSaslClientTransport) Open() error {
 	protocol := thrift.NewTBinaryProtocolFactoryDefault()
 	cli := tcliservice.NewTCLIServiceClientFactory(t, protocol)
 
-	if ! t.TSocket.IsOpen() {
+	if !t.TSocket.IsOpen() {
 		if err := t.TSocket.Open(); err != nil {
 			return err
 		}
 	}
 
 	if t.SaslClient != nil {
-		return errors.New("Already open!")
+		return errors.New("already open")
 	}
-
-	t.SaslClient = t.SaslClientFactory
-	mech, ir, err := t.SaslClient.Start()
-	if err != nil {
-		return err
-	}
-
-	// send initial message
-	if _, err := t.sendMessage(START, []byte(mech)); err != nil {
-		return err
-	}
-
-	if _, err := t.sendMessage(OK, ir); err != nil {
-		return err
-	}
-
-	for {
-		status, payload, err := t.recvMessage()
-		if err != nil {
-			return err
-		}
-		if status != OK && status != COMPLETE {
-			return errors.New(fmt.Sprintf("Bad status:%d %s", status, string(payload)))
-		}
-
-		if status == COMPLETE {
-			break
-		}
-
-		response, err := t.SaslClient.Next(payload)
-		if err != nil {
-			return err
-		}
-		t.sendMessage(OK, response)
-	}
-
-	//fmt.Println("connection built, opening session...")
 
 	req := tcliservice.NewTOpenSessionReq()
-	req.Username = &t.User
-	req.Password = &t.Passwd
-	req.ClientProtocol = tcliservice.TProtocolVersion_HIVE_CLI_SERVICE_PROTOCOL_V1
+	if t.NeedAuth && t.SaslClientFactory != nil {
+		fmt.Println("doing sasl authentication")
+		t.SaslClient = t.SaslClientFactory
+		mech, ir, err := t.SaslClient.Start()
+		if err != nil {
+			return err
+		}
 
-	session, err := cli.OpenSession(req)
+		// send initial message
+		if _, err := t.sendMessage(START, []byte(mech)); err != nil {
+			return err
+		}
+
+		if _, err := t.sendMessage(OK, ir); err != nil {
+			return err
+		}
+
+		for {
+			status, payload, err := t.recvMessage()
+			if err != nil {
+				return err
+			}
+			if status != OK && status != COMPLETE {
+				return errors.New(fmt.Sprintf("Bad status:%d %s", status, string(payload)))
+			}
+
+			if status == COMPLETE {
+				break
+			}
+
+			response, err := t.SaslClient.Next(payload)
+			if err != nil {
+				return err
+			}
+			t.sendMessage(OK, response)
+		}
+
+		req.Username = &t.User
+		req.Password = &t.Passwd
+		fmt.Println("auth done")
+	}
+	req.ClientProtocol = tcliservice.TProtocolVersion_HIVE_CLI_SERVICE_PROTOCOL_V9
+	fmt.Println("opening session with request:", req)
+
+	session, err := cli.OpenSession(context.Background(), req)
 	if err != nil {
 		return err
 	}
@@ -193,7 +215,7 @@ func (t *TSaslClientTransport) Close() error {
 	// close session
 	req := tcliservice.NewTCloseSessionReq()
 	req.SessionHandle = t.Session
-	_, err := t.Client.CloseSession(req)
+	_, err := t.Client.CloseSession(t.Ctx, req)
 	if err != nil {
 		return err
 	}
@@ -213,7 +235,7 @@ func (t *TSaslClientTransport) IsOpen() bool {
 }
 
 // sendMessage sends data length, status code and message body
-func (t *TSaslClientTransport) sendMessage(status int, body []byte) (int, error){
+func (t *TSaslClientTransport) sendMessage(status int, body []byte) (int, error) {
 	data := make([]byte, 0)
 	header1 := byte(status)
 	header2 := make([]byte, 4)
@@ -221,13 +243,13 @@ func (t *TSaslClientTransport) sendMessage(status int, body []byte) (int, error)
 
 	data = append(data, header1)
 	data = append(data, header2...)
-    data = append(data, body...)
+	data = append(data, body...)
 
 	n, err := t.TSocket.Write(data)
 	if err != nil {
 		return n, err
 	}
-	if err := t.TSocket.Flush(); err != nil {
+	if err := t.TSocket.Flush(t.Ctx); err != nil {
 		return n, err
 	}
 	return n, nil
@@ -257,21 +279,21 @@ func (t *TSaslClientTransport) recvMessage() (int, []byte, error) {
 
 // Issue a query on an open connection, returning a RowSet, which
 // can be later used to query the operation's status.
-func (c *TSaslClientTransport) Query(query string) (RowSet, error) {
+func (t *TSaslClientTransport) Query(query string) (RowSet, error) {
 	executeReq := tcliservice.NewTExecuteStatementReq()
-	executeReq.SessionHandle = c.Session
+	executeReq.SessionHandle = t.Session
 	executeReq.Statement = query
 
-	resp, err := c.Client.ExecuteStatement(executeReq)
+	resp, err := t.Client.ExecuteStatement(t.Ctx, executeReq)
 	if err != nil {
-		return nil, fmt.Errorf("Error in ExecuteStatement: %+v, %v", resp, err)
+		return nil, fmt.Errorf("error in ExecuteStatement: %+v, %v", resp, err)
 	}
 
 	if !isSuccessStatus(*resp.Status) {
-		return nil, fmt.Errorf("Error from server: %s", resp.Status.String())
+		return nil, fmt.Errorf("error from server: %s", resp.Status.String())
 	}
 
-	return newRowSet(c.Client, resp.OperationHandle, c.options), nil
+	return newRowSet(t.Client, resp.OperationHandle, t.options), nil
 }
 
 func isSuccessStatus(p tcliservice.TStatus) bool {

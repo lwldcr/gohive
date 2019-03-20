@@ -2,8 +2,9 @@ package main
 
 import (
 	"fmt"
-	"github.com/lwldcr/gohive"
 	"os"
+
+	"github.com/lwldcr/gohive"
 )
 
 func main() {
@@ -18,7 +19,7 @@ func main() {
 
 	// now open it
 	if err := t.Open(); err != nil {
-		fmt.Println(err)
+		fmt.Println("open failed:", err)
 		os.Exit(1)
 	}
 	defer t.Close()
@@ -45,6 +46,6 @@ func main() {
 	// scan results
 	for rows.Next() {
 		rows.Scan(&tableName)
-		fmt.Println("tablename:", tableName)
+		fmt.Println("table:", tableName)
 	}
 }
