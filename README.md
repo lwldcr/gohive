@@ -10,7 +10,7 @@ The latest commit is built with:
 Other versions' compatibilities are not guaranteed, use at your own risk.
 Also, you could build your own version hive client follow the steps at the end of this README.
 
-#### Problems not solved
+#### Known problems
 I found one strange thing: my Hive is configured to NONE authorization, but every time I got an "unexpected EOF" error 
 when I tried to connect with emply username & password given, but It works whatever username & password given. 
 So i use a DefaultUser & DefaultPass variables when no username & password given in my code to make it works. Please 

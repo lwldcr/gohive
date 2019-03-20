@@ -4,12 +4,12 @@ package gohive
 rowset.go comes from github.com/derekgr/hivething, tiny changes
 */
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
 	"time"
 
-	"context"
 	"github.com/apache/thrift/lib/go/thrift"
 	"github.com/lwldcr/gohive/tcliservice"
 )

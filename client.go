@@ -11,13 +11,13 @@ package gohive
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
 	"strconv"
 
-	"context"
 	"github.com/apache/thrift/lib/go/thrift"
 	sasl "github.com/emersion/go-sasl"
 	"github.com/lwldcr/gohive/tcliservice"
@@ -196,7 +196,7 @@ func (t *TSaslClientTransport) Open() error {
 	}
 	req.ClientProtocol = tcliservice.TProtocolVersion_HIVE_CLI_SERVICE_PROTOCOL_V9
 
-	session, err := cli.OpenSession(context.Background(), req)
+	session, err := cli.OpenSession(t.Ctx, req)
 	if err != nil {
 		return err
 	}
